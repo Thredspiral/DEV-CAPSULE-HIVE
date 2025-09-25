@@ -1,0 +1,1 @@
+"""Self-extension and code generation components."""
