@@ -873,5 +873,54 @@ class SafetyOversight:
         
         # Check emergency stop
         if self.emergency_stop_active:
-            decision.update({\n                'approved': False,\n                'intervention_type': InterventionType.EMERGENCY_STOP,\n                'reasoning': ['Emergency stop is active'],\n                'blocking_factors': ['emergency_stop']\n            })\n            return decision\n        \n        # Check risk level\n        risk_level = RiskLevel(risk_assessment['overall_risk'])\n        if risk_level == RiskLevel.CRITICAL:\n            decision['approved'] = False\n            decision['intervention_type'] = InterventionType.BLOCK\n            decision['reasoning'].append(f\"Critical risk level: {risk_level.value}\")\n            decision['blocking_factors'].append('critical_risk')\n        \n        elif risk_level in [RiskLevel.HIGH, RiskLevel.MEDIUM]:\n            decision['requires_human_approval'] = True\n            decision['intervention_type'] = InterventionType.REQUIRE_APPROVAL\n            decision['reasoning'].append(f\"Risk level requires approval: {risk_level.value}\")\n        \n        # Check ethical concerns\n        if ethical_evaluation.get('approval_required', False):\n            decision['requires_human_approval'] = True\n            if decision['intervention_type'] == InterventionType.NONE:\n                decision['intervention_type'] = InterventionType.REQUIRE_APPROVAL\n            decision['reasoning'].append(\"Ethical concerns require human review\")\n        \n        # Check safety rules\n        blocking_rules = [r for r in rule_results if r.get('triggered') and r.get('intervention') == InterventionType.BLOCK.value]\n        approval_rules = [r for r in rule_results if r.get('triggered') and r.get('intervention') == InterventionType.REQUIRE_APPROVAL.value]\n        \n        if blocking_rules:\n            decision['approved'] = False\n            decision['intervention_type'] = InterventionType.BLOCK\n            decision['reasoning'].extend([f\"Blocking rule triggered: {r['rule_name']}\" for r in blocking_rules])\n            decision['blocking_factors'].extend([r['rule_id'] for r in blocking_rules])\n        \n        elif approval_rules:\n            decision['requires_human_approval'] = True\n            if decision['intervention_type'] == InterventionType.NONE:\n                decision['intervention_type'] = InterventionType.REQUIRE_APPROVAL\n            decision['reasoning'].extend([f\"Approval rule triggered: {r['rule_name']}\" for r in approval_rules])\n        \n        return decision\n    \n    def _apply_intervention(self, operation: Dict[str, Any], \n                          safety_decision: Dict[str, Any],\n                          risk_assessment: Dict[str, Any],\n                          ethical_evaluation: Dict[str, Any]) -> Dict[str, Any]:
+            decision.update({
+                'approved': False,
+                'intervention_type': InterventionType.EMERGENCY_STOP,
+                'reasoning': ['Emergency stop is active'],
+                'blocking_factors': ['emergency_stop']
+            })
+            return decision
+        
+        # Check risk level
+        risk_level = RiskLevel(risk_assessment['overall_risk'])
+        if risk_level == RiskLevel.CRITICAL:
+            decision['approved'] = False
+            decision['intervention_type'] = InterventionType.BLOCK
+            decision['reasoning'].append(f"Critical risk level: {risk_level.value}")
+            decision['blocking_factors'].append('critical_risk')
+        
+        elif risk_level in [RiskLevel.HIGH, RiskLevel.MEDIUM]:
+            decision['requires_human_approval'] = True
+            decision['intervention_type'] = InterventionType.REQUIRE_APPROVAL
+            decision['reasoning'].append(f"Risk level requires approval: {risk_level.value}")
+        
+        # Check ethical concerns
+        if ethical_evaluation.get('approval_required', False):
+            decision['requires_human_approval'] = True
+            if decision['intervention_type'] == InterventionType.NONE:
+                decision['intervention_type'] = InterventionType.REQUIRE_APPROVAL
+            decision['reasoning'].append("Ethical concerns require human review")
+        
+        # Check safety rules
+        blocking_rules = [r for r in rule_results if r.get('triggered') and r.get('intervention') == InterventionType.BLOCK.value]
+        approval_rules = [r for r in rule_results if r.get('triggered') and r.get('intervention') == InterventionType.REQUIRE_APPROVAL.value]
+        
+        if blocking_rules:
+            decision['approved'] = False
+            decision['intervention_type'] = InterventionType.BLOCK
+            decision['reasoning'].extend([f"Blocking rule triggered: {r['rule_name']}" for r in blocking_rules])
+            decision['blocking_factors'].extend([r['rule_id'] for r in blocking_rules])
+        
+        elif approval_rules:
+            decision['requires_human_approval'] = True
+            if decision['intervention_type'] == InterventionType.NONE:
+                decision['intervention_type'] = InterventionType.REQUIRE_APPROVAL
+            decision['reasoning'].extend([f"Approval rule triggered: {r['rule_name']}" for r in approval_rules])
+        
+        return decision
+    
+    def _apply_intervention(self, operation: Dict[str, Any], 
+                          safety_decision: Dict[str, Any],
+                          risk_assessment: Dict[str, Any],
+                          ethical_evaluation: Dict[str, Any]) -> Dict[str, Any]:
         \"\"\"Apply the determined safety intervention.\"\"\"\n        intervention_type = InterventionType(safety_decision['intervention_type'])\n        \n        result = {\n            'intervention_applied': intervention_type.value,\n            'success': True,\n            'human_request_id': None,\n            'message': 'No intervention required'\n        }\n        \n        if intervention_type == InterventionType.BLOCK:\n            result['message'] = 'Operation blocked due to safety concerns'\n            result['success'] = False\n        \n        elif intervention_type == InterventionType.REQUIRE_APPROVAL:\n            # Request human approval\n            approval_request = self.human_loop.request_approval(\n                operation, risk_assessment, ethical_evaluation\n            )\n            result['human_request_id'] = approval_request.request_id\n            result['message'] = f'Human approval requested: {approval_request.request_id}'\n            result['success'] = False  # Pending approval\n        \n        elif intervention_type == InterventionType.EMERGENCY_STOP:\n            result['message'] = 'Operation blocked - emergency stop active'\n            result['success'] = False\n        \n        elif intervention_type == InterventionType.LOG:\n            result['message'] = 'Operation logged for monitoring'\n        \n        return result\n    \n    def _log_safety_event(self, evaluation_result: Dict[str, Any]) -> None:\n        \"\"\"Log a safety evaluation event.\"\"\"\n        event = SafetyEvent(\n            event_id=evaluation_result['operation_id'],\n            timestamp=evaluation_result['timestamp'],\n            risk_level=RiskLevel(evaluation_result['risk_assessment']['overall_risk']),\n            event_type='operation_evaluation',\n            description=f\"Safety evaluation completed\",\n            context=evaluation_result,\n            intervention_applied=InterventionType(evaluation_result['intervention_result']['intervention_applied']),\n            human_involved=evaluation_result['requires_human_approval']\n        )\n        \n        self.safety_log.append(event)\n    \n    def _generate_operation_id(self, operation: Dict[str, Any]) -> str:\n        \"\"\"Generate unique operation ID.\"\"\"\n        content = f\"{operation}{time.time()}\"\n        return hashlib.md5(content.encode()).hexdigest()[:16]"
